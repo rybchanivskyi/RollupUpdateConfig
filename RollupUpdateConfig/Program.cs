@@ -40,7 +40,7 @@ namespace RollupUpdateConfig
                 {
                     Console.WriteLine("Try to receive data!");
 
-                    HandleErrors(svc, TypeErorr, TypeConfig, currencyId);
+                    HandleErrors(svc, TypeErorr, currencyId);
 
                     HandleTasks(svc, TypeTask, TypeConfig, TypeErorr);
                 }
@@ -54,10 +54,10 @@ namespace RollupUpdateConfig
             Console.ReadLine();
         }
 
-        public static void HandleErrors(CrmServiceClient svc, int TypeErorr, int TypeConfig, Guid currencyId)
+        public static void HandleErrors(CrmServiceClient svc, int TypeError, Guid currencyId)
         {
-            DataCollection<Entity> errors = getQuery(svc,
-                new[] {"np_rollupupdateconfigid", "np_entitywithrollups", "np_recordid"}, TypeErorr);
+            List<Entity> errors = getQuery(svc,
+                new[] {"np_rollupupdateconfigid", "np_entitywithrollups", "np_recordid"}, TypeError);
 
 
             foreach (var error in errors)
@@ -65,7 +65,7 @@ namespace RollupUpdateConfig
                 try
                 {
                     if (UpdateErrorRecord(svc, error.Attributes["np_entitywithrollups"].ToString(),
-                        new Guid(error.Attributes["np_recordid"].ToString()), TypeConfig, currencyId))
+                        new Guid(error.Attributes["np_recordid"].ToString()), currencyId))
                     {
                         ChangeState(svc, "np_rollupupdateconfig", error.Id);
                     }
@@ -79,7 +79,7 @@ namespace RollupUpdateConfig
 
         public static void HandleTasks(CrmServiceClient svc, int TypeTask, int TypeConfig, int TypeError)
         {
-            DataCollection<Entity> tasks = getQuery(svc,
+            List<Entity> tasks = getQuery(svc,
                 new[] { "np_rollupupdateconfigid", "np_entitywithrollups"}, TypeTask);
 
             foreach (var task in tasks)
@@ -91,36 +91,50 @@ namespace RollupUpdateConfig
 
         public static void HandleConfigs(CrmServiceClient svc, string entityName, int TypeConfig, int TypeError)
         {
-            DataCollection<Entity> configs = getQuery(svc,
+            List<Entity> configs = getQuery(svc,
                 new[] { "np_rollupupdateconfigid", "np_fields_for_update" }, TypeConfig, entityName);
             foreach (var config in configs)
             {
-                QueryExpression query = new QueryExpression(entityName);
-                var recordsOfEntity = svc.RetrieveMultiple(query).Entities;
-                foreach (var record in recordsOfEntity)
+                if (!config.Attributes.Contains("np_fields_for_update"))
                 {
-                    foreach (string fieldName in config.Attributes["np_fields_for_update"].ToString().Split(','))
+                    continue;
+                }
+
+                try
+                {
+                    QueryExpression query = new QueryExpression(entityName);
+                    var recordsOfEntity = svc.RetrieveMultiple(query).Entities;
+                    foreach (var record in recordsOfEntity)
                     {
-                        Console.WriteLine($"Try to update record with ID = {record.Id}");
-                        try
+                        foreach (string fieldName in config.Attributes["np_fields_for_update"].ToString().Split(','))
                         {
-                            CalculateRollupFieldRequest crfr = new CalculateRollupFieldRequest
+                            Console.WriteLine($"Try to update record with ID = {record.Id}");
+                            try
                             {
-                                Target = new EntityReference(entityName, record.Id),
-                                FieldName = fieldName
-                            };
-                            CalculateRollupFieldResponse response = (CalculateRollupFieldResponse) svc.Execute(crfr);
-                        }
-                        catch (Exception ex)
-                        {
-                            Entity err = new Entity("np_rollupupdateconfig");
-                            err["np_recordtype"] = new OptionSetValue(TypeError);
-                            err["np_entitywithrollups"] = entityName;
-                            err["np_recordid"] = record.Id.ToString();
-                            svc.Create(err);
-                            Console.WriteLine($"Can`t update record with ID = {record.Id}.Error was created!");
+                                CalculateRollupFieldRequest crfr = new CalculateRollupFieldRequest
+                                {
+                                    Target = new EntityReference(entityName, record.Id),
+                                    FieldName = fieldName
+                                };
+                                CalculateRollupFieldResponse
+                                    response = (CalculateRollupFieldResponse) svc.Execute(crfr);
+                            }
+                            catch (Exception ex)
+                            {
+                                Entity err = new Entity("np_rollupupdateconfig");
+                                err["np_recordtype"] = new OptionSetValue(TypeError);
+                                err["np_entitywithrollups"] = entityName;
+                                err["np_recordid"] = record.Id.ToString();
+                                svc.Create(err);
+                                Console.WriteLine($"Can`t update record with ID = {record.Id}.Error was created!");
+                            }
                         }
                     }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Erorr ocurred when tried to retrieve data from Entity with name {entityName}");
+                    Console.WriteLine(ex.Message);
                 }
             }
         }
@@ -128,49 +142,31 @@ namespace RollupUpdateConfig
         public static void ChangeState(CrmServiceClient svc, string entityName, Guid Id, int stateCode = 1,
             int statusCode = 2)
         {
-            SetStateRequest state = new SetStateRequest();
-            state.State = new OptionSetValue(stateCode);
-            state.Status = new OptionSetValue(statusCode);
-            state.EntityMoniker = new EntityReference(entityName, Id);
+            SetStateRequest state = new SetStateRequest
+            {
+                State = new OptionSetValue(stateCode),
+                Status = new OptionSetValue(statusCode),
+                EntityMoniker = new EntityReference(entityName, Id)
+            };
             svc.Execute(state);
         }
 
-        public static bool UpdateErrorRecord(CrmServiceClient svc, string entityName, Guid Id, int TypeConfig, Guid currencyId)
+        public static bool UpdateErrorRecord(CrmServiceClient svc, string entityName, Guid id, Guid currencyId)
         {
-            DataCollection<Entity> configs = getQuery(svc,
-                new[] { "np_rollupupdateconfigid", "np_fields_for_update" }, TypeConfig, entityName);
-            for (int i = 0; i < 2; ++i)
+            try
             {
-                foreach (var config in configs)
-                {
-                    foreach (string fieldName in config.Attributes["np_fields_for_update"].ToString().Split(','))
-                    {
-                        try
-                        {
-                            //change currency
-                            ColumnSet attributes = new ColumnSet("transactioncurrencyid");
-                            Entity record = svc.Retrieve(entityName, Id, attributes);
-                            record["transactioncurrencyid"] = i == 0 ? Guid.Empty : currencyId;
-                            CalculateRollupFieldRequest crfr = new CalculateRollupFieldRequest
-                            {
-                                Target = new EntityReference(entityName, Id),
-                                FieldName = fieldName
-                            };
-                            CalculateRollupFieldResponse response = (CalculateRollupFieldResponse) svc.Execute(crfr);
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine(ex.Message);
-                            return false;
-                        }
-                    }
-                }
+                svc.Update(new Entity(entityName, id) {["transactioncurrencyid"] = null});
+                svc.Update(new Entity(entityName, id) {["transactioncurrencyid"] = currencyId});
+                return true;
             }
-
-            return true;
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                return false;
+            }
         }
 
-        public static DataCollection<Entity> getQuery(CrmServiceClient svc, string[] columns, int Type, string entityName = "")
+        public static List<Entity> getQuery(CrmServiceClient svc, string[] columns, int Type, string entityName = "")
         {
             QueryExpression query = new QueryExpression()
             {
@@ -188,13 +184,36 @@ namespace RollupUpdateConfig
                             {
                                 new ConditionExpression("statecode", ConditionOperator.Equal, 0),
                                 new ConditionExpression("np_recordtype", ConditionOperator.Equal, Type),
-                                Type != 778280000 ? new ConditionExpression("createdon", ConditionOperator.Today) :new ConditionExpression("np_entitywithrollups", ConditionOperator.Equal, entityName)
+                                Type != 778280000 ? new ConditionExpression("createdon", ConditionOperator.Today) : new ConditionExpression("np_entitywithrollups", ConditionOperator.Equal, entityName)
                             }
                         }
                     }
                 }
             };
-            return svc.RetrieveMultiple(query).Entities;
+            int pageNumber = 1;
+            query.PageInfo = new PagingInfo();
+            query.PageInfo.PageNumber = pageNumber;
+            query.PageInfo.PagingCookie = null;
+            List<Entity> result = new List<Entity>();
+            while(true)
+            {
+                EntityCollection pageRecords = svc.RetrieveMultiple(query);
+                if (pageRecords.Entities != null)
+                {
+                    result.AddRange(pageRecords.Entities.ToList());
+                }
+
+                if (pageRecords.MoreRecords)
+                {
+                    query.PageInfo.PageNumber++;
+                    query.PageInfo.PagingCookie = pageRecords.PagingCookie;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            return result;
         }
     }
 }
