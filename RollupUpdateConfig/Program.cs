@@ -8,8 +8,10 @@ using Microsoft.Xrm.Tooling.Connector;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
+using System.Web.SessionState;
 
 namespace RollupUpdateConfig
 {
@@ -54,84 +56,57 @@ namespace RollupUpdateConfig
 
         public static void HandleErrors(CrmServiceClient svc, int TypeErorr, int TypeConfig, Guid currencyId)
         {
-            var errors =
-                (from rollupUpdateConfig in new OrganizationServiceContext(svc).CreateQuery("np_rollupupdateconfig")
-                    where ((OptionSetValue) rollupUpdateConfig["statecode"]).Value == 0
-                          && ((OptionSetValue) rollupUpdateConfig["np_recordtype"]).Value == TypeErorr
-                          && (DateTime) rollupUpdateConfig["createdon"] >= DateTime.Today
-                    select new
-                    {
-                        Id = (Guid) rollupUpdateConfig["np_rollupupdateconfigid"],
-                        Entity = rollupUpdateConfig.Contains("np_entitywithrollups")
-                            ? rollupUpdateConfig["np_entitywithrollups"].ToString()
-                            : "",
-                        RecordId = rollupUpdateConfig.Contains("np_recordid")
-                            ? new Guid(rollupUpdateConfig["np_recordid"].ToString())
-                            : Guid.Empty
-                    }).ToList();
+            DataCollection<Entity> errors = getQuery(svc,
+                new[] {"np_rollupupdateconfigid", "np_entitywithrollups", "np_recordid"}, TypeErorr);
+
+
             foreach (var error in errors)
             {
-                if (UpdateErrorRecord(svc, error.Entity, error.RecordId, TypeConfig, currencyId))
+                try
                 {
-                    ChangeState(svc, "np_rollupupdateconfig", error.Id);
+                    if (UpdateErrorRecord(svc, error.Attributes["np_entitywithrollups"].ToString(),
+                        new Guid(error.Attributes["np_recordid"].ToString()), TypeConfig, currencyId))
+                    {
+                        ChangeState(svc, "np_rollupupdateconfig", error.Id);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message);
                 }
             }
         }
 
         public static void HandleTasks(CrmServiceClient svc, int TypeTask, int TypeConfig, int TypeError)
         {
-            var tasks =
-                (from rollupUpdateConfig in new OrganizationServiceContext(svc).CreateQuery("np_rollupupdateconfig")
-                    where ((OptionSetValue) rollupUpdateConfig["statecode"]).Value == 0
-                          && ((OptionSetValue) rollupUpdateConfig["np_recordtype"]).Value == TypeTask
-                          && (DateTime) rollupUpdateConfig["createdon"] >= DateTime.Today
-                    select new
-                    {
-                        Id = (Guid) rollupUpdateConfig["np_rollupupdateconfigid"],
-                        Entity = rollupUpdateConfig.Contains("np_entitywithrollups")
-                            ? rollupUpdateConfig["np_entitywithrollups"].ToString()
-                            : ""
-                    }).ToList();
+            DataCollection<Entity> tasks = getQuery(svc,
+                new[] { "np_rollupupdateconfigid", "np_entitywithrollups"}, TypeTask);
 
             foreach (var task in tasks)
             {
-                HandleConfigs(svc, task.Entity, TypeConfig, TypeError);
+                HandleConfigs(svc, task.Attributes["np_entitywithrollups"].ToString(), TypeConfig, TypeError);
                 ChangeState(svc, "np_rollupupdateconfig", task.Id);
             }
         }
 
         public static void HandleConfigs(CrmServiceClient svc, string entityName, int TypeConfig, int TypeError)
         {
-            var configs =
-                (from rollupUpdateConfig in new OrganizationServiceContext(svc).CreateQuery("np_rollupupdateconfig")
-                    where ((OptionSetValue) rollupUpdateConfig["statecode"]).Value == 0
-                          && ((OptionSetValue) rollupUpdateConfig["np_recordtype"]).Value == TypeConfig
-                          && (string) rollupUpdateConfig["np_entitywithrollups"] == entityName
-                    select new
-                    {
-                        Id = (Guid) rollupUpdateConfig["np_rollupupdateconfigid"],
-                        Entity = entityName,
-                        FieldsForUpdate = rollupUpdateConfig.Contains("np_fields_for_update")
-                            ? rollupUpdateConfig["np_fields_for_update"].ToString()
-                            : ""
-                    }).ToList();
+            DataCollection<Entity> configs = getQuery(svc,
+                new[] { "np_rollupupdateconfigid", "np_fields_for_update" }, TypeConfig, entityName);
             foreach (var config in configs)
             {
-                var recordsOfEntity = (from entity in new OrganizationServiceContext(svc).CreateQuery(config.Entity)
-                    select new
-                    {
-                        Id = (Guid) entity[config.Entity + "id"]
-                    }).ToList();
+                QueryExpression query = new QueryExpression(entityName);
+                var recordsOfEntity = svc.RetrieveMultiple(query).Entities;
                 foreach (var record in recordsOfEntity)
                 {
-                    foreach (string fieldName in config.FieldsForUpdate.Split(','))
+                    foreach (string fieldName in config.Attributes["np_fields_for_update"].ToString().Split(','))
                     {
                         Console.WriteLine($"Try to update record with ID = {record.Id}");
                         try
                         {
                             CalculateRollupFieldRequest crfr = new CalculateRollupFieldRequest
                             {
-                                Target = new EntityReference(config.Entity, record.Id),
+                                Target = new EntityReference(entityName, record.Id),
                                 FieldName = fieldName
                             };
                             CalculateRollupFieldResponse response = (CalculateRollupFieldResponse) svc.Execute(crfr);
@@ -140,8 +115,8 @@ namespace RollupUpdateConfig
                         {
                             Entity err = new Entity("np_rollupupdateconfig");
                             err["np_recordtype"] = new OptionSetValue(TypeError);
-                            err["np_entitywithrollups"] = config.Entity;
-                            err["np_recordid"] = record.Id;
+                            err["np_entitywithrollups"] = entityName;
+                            err["np_recordid"] = record.Id.ToString();
                             svc.Create(err);
                             Console.WriteLine($"Can`t update record with ID = {record.Id}.Error was created!");
                         }
@@ -162,24 +137,13 @@ namespace RollupUpdateConfig
 
         public static bool UpdateErrorRecord(CrmServiceClient svc, string entityName, Guid Id, int TypeConfig, Guid currencyId)
         {
-            var configs =
-                (from rollupUpdateConfig in new OrganizationServiceContext(svc).CreateQuery("np_rollupupdateconfig")
-                    where ((OptionSetValue) rollupUpdateConfig["statecode"]).Value == 0
-                          && ((OptionSetValue) rollupUpdateConfig["np_recordtype"]).Value == TypeConfig
-                          && (string) rollupUpdateConfig["np_entitywithrollups"] == entityName
-                    select new
-                    {
-                        Id = (Guid) rollupUpdateConfig["np_rollupupdateconfigid"],
-                        Entity = entityName,
-                        FieldsForUpdate = rollupUpdateConfig.Contains("np_fields_for_update")
-                            ? rollupUpdateConfig["np_fields_for_update"].ToString()
-                            : ""
-                    }).ToList();
+            DataCollection<Entity> configs = getQuery(svc,
+                new[] { "np_rollupupdateconfigid", "np_fields_for_update" }, TypeConfig, entityName);
             for (int i = 0; i < 2; ++i)
             {
                 foreach (var config in configs)
                 {
-                    foreach (string fieldName in config.FieldsForUpdate.Split(','))
+                    foreach (string fieldName in config.Attributes["np_fields_for_update"].ToString().Split(','))
                     {
                         try
                         {
@@ -204,6 +168,33 @@ namespace RollupUpdateConfig
             }
 
             return true;
+        }
+
+        public static DataCollection<Entity> getQuery(CrmServiceClient svc, string[] columns, int Type, string entityName = "")
+        {
+            QueryExpression query = new QueryExpression()
+            {
+                Distinct = false,
+                EntityName = "np_rollupupdateconfig",
+                ColumnSet = new ColumnSet(columns),
+                Criteria =
+                {
+                    Filters =
+                    {
+                        new FilterExpression
+                        {
+                            FilterOperator = LogicalOperator.And,
+                            Conditions =
+                            {
+                                new ConditionExpression("statecode", ConditionOperator.Equal, 0),
+                                new ConditionExpression("np_recordtype", ConditionOperator.Equal, Type),
+                                Type != 778280000 ? new ConditionExpression("createdon", ConditionOperator.Today) :new ConditionExpression("np_entitywithrollups", ConditionOperator.Equal, entityName)
+                            }
+                        }
+                    }
+                }
+            };
+            return svc.RetrieveMultiple(query).Entities;
         }
     }
 }
