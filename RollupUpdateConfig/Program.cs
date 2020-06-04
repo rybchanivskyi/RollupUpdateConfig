@@ -102,8 +102,11 @@ namespace RollupUpdateConfig
 
                 try
                 {
-                    QueryExpression query = new QueryExpression(entityName);
-                    var recordsOfEntity = svc.RetrieveMultiple(query).Entities;
+                    QueryExpression query = new QueryExpression(entityName)
+                    {
+                        ColumnSet = new ColumnSet($"{entityName}id")
+                    };
+                    List<Entity> recordsOfEntity = getDataOfQuery(svc, query);
                     foreach (var record in recordsOfEntity)
                     {
                         foreach (string fieldName in config.Attributes["np_fields_for_update"].ToString().Split(','))
@@ -156,7 +159,7 @@ namespace RollupUpdateConfig
             try
             {
                 svc.Update(new Entity(entityName, id) {["transactioncurrencyid"] = null});
-                svc.Update(new Entity(entityName, id) {["transactioncurrencyid"] = currencyId});
+                svc.Update(new Entity(entityName, id) {["transactioncurrencyid"] = new EntityReference("transactioncurrency", currencyId)});
                 return true;
             }
             catch (Exception ex)
@@ -190,12 +193,17 @@ namespace RollupUpdateConfig
                     }
                 }
             };
+            return getDataOfQuery(svc, query);
+        }
+
+        public static List<Entity> getDataOfQuery(CrmServiceClient svc, QueryExpression query)
+        {
             int pageNumber = 1;
             query.PageInfo = new PagingInfo();
             query.PageInfo.PageNumber = pageNumber;
             query.PageInfo.PagingCookie = null;
             List<Entity> result = new List<Entity>();
-            while(true)
+            while (true)
             {
                 EntityCollection pageRecords = svc.RetrieveMultiple(query);
                 if (pageRecords.Entities != null)
